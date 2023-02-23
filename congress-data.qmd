@@ -1,0 +1,41 @@
+---
+title: "congress-data"
+---
+
+## Getting Set Up
+
+Start R project named `congress-data`
+
+-   Select git repo
+
+-   Select `renv` because I like to complicate things (but the reproducibility!)
+
+Try to send the repo to GitHub with `git push`. But I haven't added the repo on GitHub
+
+```{r}
+1 + 1
+```
+
+# Legislative data
+
+Source: govInfo
+
+Record of legislation introduced in the House and Senate of the US Congress. In this case, I am looking at the 117th Congress which was in power from January 2021 - January 2023.
+
+How much legislation goes through congress?
+
+How much on a given day?
+
+How much legislation becomes law?
+
+What kind of topics are the laws related to? What about all legislation proposed?
+
+## Committees
+
+How active are different committees?
+
+-   How many different bills do they consider?
+
+-   How many hearings do they hold?
+
+-   How many bills do they report?
