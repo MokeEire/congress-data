@@ -1,8 +1,9 @@
 ---
 title: "congress-data"
+editor: source
 ---
 
-## Getting Set Up
+# Getting Set Up
 
 Start R project named `congress-data`
 
@@ -12,8 +13,15 @@ Start R project named `congress-data`
 
 Try to send the repo to GitHub with `git push`. But I haven't added the repo on GitHub
 
+Use `git remote add origin [YourGitURL]`. Commit initial files, then try pushing again. The terminal errors and gives a `--set-upstream` command that solved the issue?
+
+## Libraries
+
 ```{r}
-1 + 1
+library(tidyverse)
+library(here)
+library(lubridate)
+library(skimr)
 ```
 
 # Legislative data
@@ -22,17 +30,122 @@ Source: govInfo
 
 Record of legislation introduced in the House and Senate of the US Congress. In this case, I am looking at the 117th Congress which was in power from January 2021 - January 2023.
 
-How much legislation goes through congress?
+```{r}
+# Load latest version of clean data
+clean_data = fs::dir_info(here::here("data", "cleaned"))
+latest_file = clean_data[which.max(clean_data$change_time), "path", drop = T]
 
-How much on a given day?
+all_bills = readRDS(latest_file)
+
+```
+
+```{r}
+skim(all_bills)
+```
+
+How much legislation goes through congress? In our dataset, we have `r nrow(all_bills)` pieces of legislation. We can break this out by the number of bills originating in the House compared to the Senate.
+
+```{r}
+all_bills |> 
+  count(origin_chamber)
+```
+
+Most legislation at least begins in the House.
+
+How much legislation is considered on a given day?
+
+```{r}
+# Unnest actions
+# Count distinct bills by action date
+```
 
 How much legislation becomes law?
 
+```{r}
+all_bills = all_bills |> 
+  mutate(bill_passed = map_lgl(actions, \(bill_actions) "BecameLaw" %in% bill_actions$type))
+
+bills_passed = all_bills |> 
+  filter(bill_passed)
+
+nrow(bills_passed)
+```
+
+Check the bill type though:
+
+```{r}
+bills_passed |> 
+  count(type, sort = T)
+```
+
+The 117th Congress was unusual in that the Democrats had control of all three branches of government.
+Of the 365 laws that were passed, how many were sponsored by Republicans?
+
+```{r}
+bills_passed |> 
+  unnest(sponsors) |> 
+  count(party)
+```
+
+
+## Policy Areas
+
 What kind of topics are the laws related to? What about all legislation proposed?
+
+```{r}
+bills_passed |> 
+  unnest(policy_areas, keep_empty = T) |>
+  # Count bills by policy areas
+  group_by(policy_areas) |>
+  summarise(bills = n_distinct(bill_id)) |>
+  arrange(desc(bills))
+```
+
+```{r}
+all_bills |> 
+  unnest(policy_areas, keep_empty = T) |>
+  # Count bills by policy areas
+  group_by(policy_areas) |>
+  summarise(n = n(),
+            bills = n_distinct(bill_id),
+            bills_passed = sum(bill_passed)) |>
+  arrange(desc(bills))
+```
+
+
+Let's take a look at laws related to environmental protection.
+
+```{r}
+bills_passed_ep = bills_passed |> 
+  unnest(policy_areas) |> 
+  filter(policy_areas == "Environmental Protection")
+
+View(bills_passed_ep)
+```
 
 ## Committees
 
+```{r}
+committees = all_bills |> 
+  unnest(committees, names_sep = "_", keep_empty = T) |> 
+  unnest(committees_activities, names_sep = "_", keep_empty = T)
+  
+```
+
 How active are different committees?
+
+```{r}
+committees |> 
+  group_by(committees_chamber, committees_name, bill_passed) |> 
+  summarise(bills = n_distinct(bill_id), .groups = "drop")
+```
+
+```{r}
+committees |> 
+  count(committees_chamber, committees_type, committees_name, committees_activities_name) |> 
+  pivot_wider(names_from = committees_activities_name, values_from = n)
+```
+
 
 -   How many different bills do they consider?
 
