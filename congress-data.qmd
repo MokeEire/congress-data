@@ -1,6 +1,11 @@
 ---
 title: "congress-data"
+author: Mark Barrett
 editor: source
+format:
+  html: 
+    toc: true
+    df-print: paged
 ---
 
 # Getting Set Up
@@ -18,6 +23,9 @@ Use `git remote add origin [YourGitURL]`. Commit initial files, then try pushing
 ## Libraries
 
 ```{r}
+#| label: load-libs
+#| message: false
+#| warning: false
 library(tidyverse)
 library(here)
 library(lubridate)
