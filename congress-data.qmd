@@ -1,5 +1,5 @@
 ---
-title: "congress-data"
+title: "Using `congress-data`"
 author: Mark Barrett
 editor: source
 format:
@@ -8,19 +8,7 @@ format:
     df-print: paged
 ---
 
-# Getting Set Up
-
-Start R project named `congress-data`
-
--   Select git repo
-
--   Select `renv` because I like to complicate things (but the reproducibility!)
-
-Try to send the repo to GitHub with `git push`. But I haven't added the repo on GitHub
-
-Use `git remote add origin [YourGitURL]`. Commit initial files, then try pushing again. The terminal errors and gives a `--set-upstream` command that solved the issue?
-
-## Libraries
+# Libraries
 
 ```{r}
 #| label: load-libs
@@ -34,11 +22,13 @@ library(skimr)
 
 # Legislative data
 
-Source: govInfo
+Source: govInfo's [Bill Status bulk repository](https://www.govinfo.gov/bulkdata/BILLSTATUS)
 
-Record of legislation introduced in the House and Senate of the US Congress. In this case, I am looking at the 117th Congress which was in power from January 2021 - January 2023.
+I collected this data for the 117th Congress (2021-2023) by downloading the XML files and parsing them into a tabular format (Link to data collection article coming soon!) using R. Below I load this data file:
 
 ```{r}
+#| label: load-data
+#| cache: true
 # Load latest version of clean data
 clean_data = fs::dir_info(here::here("data", "cleaned"))
 latest_file = clean_data[which.max(clean_data$change_time), "path", drop = T]
@@ -47,116 +37,260 @@ all_bills = readRDS(latest_file)
 
 ```
 
+## What even is legislation?
+
+Before we explore the legislative data, it's important to understand how the legislative process actually works. Congress has some videos that give an [overview of the legislative process](https://www.congress.gov/legislative-process) in the style of a mandatory corporate compliance training. [How Our Laws Are Made](https://www.congress.gov/help/learn-about-the-legislative-process/how-our-laws-are-made) is a more thorough outline of the federal law-making process, written by former parliamentarian John Sullivan.
+
+So what happens between the spark of an idea and the presidential signature that enacts it into law? Simply put, the idea is written as a bill to be introduced to Congress and referred to committees of legislators that focus on the policy area(s) of the bill.\
+The committee(s) can report the bill for *consideration*[^1] or the whole chamber can decide to vote on it immediately. If the bill is passed by one chamber of Congress, it moves on to the opposite chamber which employs a similar process and finally the president signs the bill into law.
+
+[^1]: Committees typically report a bill for consideration to move the bill to recommend the chamber votes on the bill. They can also report a bill unfavourably but as we'll see that doesn't happen too often.
+
+How is this process recorded in data and can we learn anything about the institutional decision-making by exploring the data?
+
+::: {.callout-note collapse="true"}
+## Get a glimpse of the data
+
+`glimpse()` shows us each variable, their type, and a few example data points.
+
 ```{r}
+glimpse(all_bills)
+```
+:::
+
+```{r}
+#| label: skim-df
+#| eval: false
+#| include: false
+#Get a summary of the data first.
 skim(all_bills)
 ```
 
-How much legislation goes through congress? In our dataset, we have `r nrow(all_bills)` pieces of legislation. We can break this out by the number of bills originating in the House compared to the Senate.
+In addition to administrative information like the bill number, title, and and sponsors, Bill Status contains the committees that a bill was referred to, actions taken by different congressional bodies, and the policy area classifications of the bill.
+
+To start, how many pieces of legislation are presented to Congress by our representatives?\
+In the 117th congress, there were **`r scales::comma(nrow(all_bills))`** bills and resolutions introduced throughout its two legislative sessions. 
+How much legislation is introduced in either chamber?
 
 ```{r}
+#| label: chamber-bills
 all_bills |> 
-  count(origin_chamber)
+  # Count the number of bills by their chamber of origin
+  count(origin_chamber, wt = n_distinct(bill_id))
 ```
 
-Most legislation at least begins in the House.
-
-How much legislation is considered on a given day?
-
-```{r}
-# Unnest actions
-# Count distinct bills by action date
-```
-
-How much legislation becomes law?
+Nearly double the amount of legislation was introduced in the House as in the Senate. 
+The House does have over four times the number of legislators as the Senate and also has the unique ability to introduce bills which raise revenue (e.g. taxes).
+With all these bills being introduced, how many become law?
 
 ```{r}
+#| label: bills-passed
 all_bills = all_bills |> 
+  # Search each bill's actions for a "BecameLaw" action type
   mutate(bill_passed = map_lgl(actions, \(bill_actions) "BecameLaw" %in% bill_actions$type))
 
 bills_passed = all_bills |> 
+  # Keep only passing bills
   filter(bill_passed)
 
 nrow(bills_passed)
 ```
 
-Check the bill type though:
+Only `r nrow(bills_passed)`.
+
+## Sponsors
+
+The 117th Congress was unusual in that the Democrats had control of all three branches of government. Of the 365 laws that were passed, how many were sponsored by Republicans?
 
 ```{r}
+#| label: sponsor-party-check
+bills_passed |> 
+  select(bill_id, sponsors) |> 
+  # Unnest sponsors
+  unnest(sponsors, keep_empty = T) |> 
+  # Count the party of bills' sponsors
+  count(party) |> 
+  mutate(pct = scales::percent(n/sum(n)))
+```
+
+How much legislation was introduced by Democrats and Republicans in each chamber?
+
+```{r}
+all_bills |> 
+  select(bill_id, origin_chamber, sponsors) |> 
+  # Unnest sponsors data
+  unnest(sponsors, keep_empty = T) |> 
+  # Count unique bills by chamber and party
+  group_by(origin_chamber, party) |> 
+  summarise(bills = n_distinct(bill_id),
+            .groups = "drop") |> 
+  # Pivot chamber to the columns
+  pivot_wider(names_from = origin_chamber, values_from = bills, values_fill = 0) |> #, values_fill = "0", values_fn = scales::comma)
+  # Calculate percentages
+  mutate(`House %` = House/sum(House),
+         `Senate %` = Senate/sum(Senate),
+         # Format columns
+         across(c(House, Senate), scales::comma),
+         across(contains("%"), scales::percent, accuracy = .1)) |> 
+  dplyr::relocate(`House %`, .after = House)
+```
+
+
+So roughly a third of the laws passed were introduced by Republicans. Lawmakers can also *co-sponsor* bills indicating their support for it. How often do bills have co-sponsors? And how often do they have co-sponsors from the opposite party?
+
+```{r}
+all_bills |> 
+  select(bill_id, cosponsors) |> 
+  unnest(cosponsors, keep_empty = T) |> 
+  # Count sponsors per bill
+  group_by(bill_id) |> 
+  summarise(cosponsors = sum(!is.na(bioguide_id))) |> 
+  summarise(across(cosponsors, list(min = min, median = median, mean = mean, max = max), na.rm=T))
+```
+
+```{r}
+# Find sponsors and their parties
+all_bills |> 
+  select(bill_id, sponsors, cosponsors) |> 
+  unnest(sponsors, keep_empty = T, names_sep = "_") |> 
+  select(bill_id, sponsors_full_name, sponsors_party, cosponsors) |> 
+  # Find cosponsors and their parties
+  unnest(cosponsors, keep_empty = T, names_sep = "_") |> 
+  select(bill_id, sponsors_full_name, sponsors_party, cosponsors_full_name, cosponsors_party) |> 
+  group_by(sponsors_party, cosponsors_party) |> 
+  summarise(bills = n_distinct(bill_id))
+  
+```
+
+How many of the bills that became law were introduced by either party?
+
+```{r}
+bills_passed |> 
+  # Unnest sponsors data
+  select(bill_id, origin_chamber, sponsors) |> 
+  unnest(sponsors, keep_empty = T) |> 
+  group_by(origin_chamber, party) |> 
+  summarise(bills = n_distinct(bill_id)) |> 
+  pivot_wider(names_from = origin_chamber, values_from = bills)
+```
+
+
+That is a very small number compared to how many bills are introduced. Now it's important to note that only certain kinds of bills *can* become law - (regular old) bills and joint resolutions.
+
+```{r}
+filter(all_bills, type %in% c("HR", "HJRES", "S", "SJRES")) |> 
+  nrow()
+```
+
+So around 2-3% become law.
+
+```{r}
+#| eval: false
+#| include: false
+# Check the bill type though, are any simple/concurrent resolutions in there?
 bills_passed |> 
   count(type, sort = T)
 ```
 
-The 117th Congress was unusual in that the Democrats had control of all three branches of government.
-Of the 365 laws that were passed, how many were sponsored by Republicans?
 
-```{r}
-bills_passed |> 
-  unnest(sponsors) |> 
-  count(party)
-```
+Questions
+
+-   Do successful bills get sponsored by a small number of legislators?
+
+-   What kind of bills did Democrats sponsor compared to Republicans?
 
 
 ## Policy Areas
 
-What kind of topics are the laws related to? What about all legislation proposed?
+What policy areas are these new laws related to? What about all legislation proposed?
 
 ```{r}
-bills_passed |> 
-  unnest(policy_areas, keep_empty = T) |>
-  # Count bills by policy areas
-  group_by(policy_areas) |>
-  summarise(bills = n_distinct(bill_id)) |>
-  arrange(desc(bills))
-```
-
-```{r}
+#| label: policy-bill-count
 all_bills |> 
-  unnest(policy_areas, keep_empty = T) |>
+  unnest(policy_areas, keep_empty = T) |> # nrow() # check row count
   # Count bills by policy areas
   group_by(policy_areas) |>
-  summarise(n = n(),
-            bills = n_distinct(bill_id),
+  summarise(bills = n_distinct(bill_id),
             bills_passed = sum(bill_passed)) |>
-  arrange(desc(bills))
-```
-
-
-Let's take a look at laws related to environmental protection.
-
-```{r}
-bills_passed_ep = bills_passed |> 
-  unnest(policy_areas) |> 
-  filter(policy_areas == "Environmental Protection")
-
-View(bills_passed_ep)
+  arrange(desc(bills_passed))
 ```
 
 ## Committees
 
+How many bills are referred to different committees?
+
 ```{r}
+#| label: committee-count
+#| column: page
 committees = all_bills |> 
   unnest(committees, names_sep = "_", keep_empty = T) |> 
   unnest(committees_activities, names_sep = "_", keep_empty = T)
+
+committees |> 
+  group_by(committees_chamber, committees_name) |> 
+  summarise(bills = n_distinct(bill_id), .groups = "drop")
   
 ```
 
-How active are different committees?
+```{r}
+#| eval: false
+#| include: false
+# What's happening with rows that are missing committees chamber and name?
+committees |> 
+  filter(is.na(committees_chamber), is.na(committees_name))
+```
+
+What activities do committees engage in?
 
 ```{r}
+#| label: committee-activity-count
+#| column: page
 committees |> 
-  group_by(committees_chamber, committees_name, bill_passed) |> 
-  summarise(bills = n_distinct(bill_id), .groups = "drop")
+  # Count committee activities on bills
+  count(committees_chamber, committees_name, committees_activities_name, wt = n_distinct(bill_id)) |> 
+  pivot_wider(names_from = committees_activities_name, values_from = n, values_fill = 0) |> 
+  # Sort activities by their (rough) order of occurrence
+  select(committees_name, committees_chamber, 
+         `Referred to`, `Hearings by`, `Markup by`, `Reported by`, `Reported original measure`, `Discharged from`, `NA`)
 ```
 
 ```{r}
-committees |> 
-  count(committees_chamber, committees_type, committees_name, committees_activities_name) |> 
-  pivot_wider(names_from = committees_activities_name, values_from = n)
+# Why does this bill have an action occur after it became law?
+bills_passed |> 
+  select(bill_id, contains("action")) |> 
+  filter(bill_id == "HR-1276") |> 
+  unnest(actions) |> 
+  arrange(action_date)
 ```
 
+# Questions
 
--   How many different bills do they consider?
+-   How many different bills do committees consider?
 
--   How many hearings do they hold?
+-   How many hearings do committees hold?
 
--   How many bills do they report?
+-   How many bills do committees report?
+
+-   What actions occur on bills that become law? How does this differ from bills that do not?
+
+-   How many bills that become law received a committee report? How many had hearings?
+
+- How long does it take for bills to become law?
+
+- Where happens to bills that don't become law?
+
+
+
+::: {.callout-note collapse="true" appearance="minimal"}
+## Project setup
+
+Start R project named `congress-data`
+
+-   Select git repo
+
+-   Select `renv` because I like to complicate things (but the reproducibility!)
+
+Try to send the repo to GitHub with `git push`. But I haven't added the repo on GitHub
+
+Use `git remote add origin [YourGitURL]`. Commit initial files, then try pushing again. The terminal returns an error and provides a `--set-upstream` command that solves the issue?
+:::
