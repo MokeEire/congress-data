@@ -2,7 +2,7 @@ library(tictoc)
 library(furrr)
 library(here)
 plan(multisession)
-source("R/parsing_functions.R")
+source(here("R", "parsing_functions.R"))
 
 # List files ----
 # Files collected from:
@@ -57,11 +57,12 @@ sample_df = future_map(sample_files, extract_bill_status,
   list_rbind()
 toc()
 
-
+# Extract for real
 tic(str_c("Extract ", length(all_files), " bills"))
 all_bills = future_map(all_files, extract_bill_status, 
                        log_types = NULL, .progress = T) |> 
   list_rbind() |> 
+  # Set column order
   select(congress, origin_chamber, bill_id, type, number, title, 
          introduced_date, update_date, 
          latest_action_date = latest_action_action_date, latest_action_text, latest_action_action_time = latest_action_action_time,
@@ -93,79 +94,8 @@ test_xml_committees %>% map(xml_children)
 
 
 
-# Unnest different datasets -----------------------------------------------
-
-# Actions
-# Unnest & arrange
-all_actions = select(all_bills, bill_id, actions) |> 
-  unnest(actions, keep_empty = T) |> # Keep bills without any actions, these shouldn't exist though
-  arrange(bill_id, action_date, action_time)
-
-actions_clean = all_actions |> 
-  select(-where(is_list), -where(\(x)sum(!is.na(x)) == 0)) |> 
-  arrange(bill_id, action_date, action_time)
-# Votes
-all_votes = all_actions |> 
-  unnest(committees, keep_empty = T) |> 
-  unnest(vote_record) |> 
-  unnest(vote, names_sep = "_") |> 
-  select(-vote_action_date, -vote_action_time)
-
-# Split votes into Senate and House because they use different columns
-# TODO: Do this cleaning in the data collection
-
-# Senate
-all_votes_senate = all_votes |> 
-  filter(chamber == "Senate") |> 
-  # Remove columns with no values
-  select(-where(\(x) sum(!is.na(x)) == 0)) |> 
-  # Unnest legislator data
-  unnest(vote_legislator_votes, keep_empty = T)
-
-# House
-all_votes_house = all_votes |> 
-  filter(chamber == "House") |> 
-  # Remove columns with no values
-  select(-where(\(x) sum(!is.na(x)) == 0)) |> 
-  # Unnest legislator data
-  unnest(vote_legislator_votes, keep_empty = T) |> #glimpse()
-  # Align col names with senate
-  rename(vote_number = vote_rollcall_num, 
-         party = legislator_party, state = legislator_state, last_name = legislator_sort_field, 
-         vote_cast = vote, vote_document_text = vote_desc) |> 
-  # Remove aggregates
-  select(-vote_party_votes)
-
-
-votes_combined = bind_rows(all_votes_house, all_votes_senate)
-
-# Committees
-all_committees = select(all_bills, bill_id, committees) |> 
-  unnest(committees, keep_empty = T) |> 
-  unnest(activities, names_sep = "_", keep_empty = T) |> 
-  unnest(subcommittees, keep_empty = T, names_sep = "_") |> 
-  unnest(subcommittees_activities, names_sep = "_", keep_empty = T) |> 
-  arrange(bill_id, activities_date, subcommittees_activities_date)
-
-# Sponsors
-all_sponsors = select(all_bills, bill_id, sponsors) |> 
-  unnest(sponsors, keep_empty = T) |> 
-  mutate(type = "sponsor", district = as.character(district))
-# Cosponsors
-all_cosponsors = select(all_bills, bill_id, cosponsors) |> 
-  unnest(cosponsors, keep_empty = T) |> 
-  mutate(type = "cosponsor", district = as.character(district))
-
-sponsors_combined = bind_rows(all_sponsors, all_cosponsors)
-
-
 # Save objects ------------------------------------------------------------
 
 saveRDS(all_bills, here("data", "cleaned", paste0("BILLSTATUS_117_", lubridate::today(), ".Rds")))
 # saveRDS(actions_unnested, here("data", "cleaned", "BILLSTATUS_117_Actions.Rds"))
-
-write_csv(actions_clean, here("data", "cleaned", "actions_117.csv"), na = "")
-write_csv(all_committees, here("data", "cleaned", "committees_117.csv"), na = "")
-write_csv(votes_combined, here("data", "cleaned", "votes_117.csv"), na = "")
-write_csv(sponsors_combined, here("data", "cleaned", "sponsors_117.csv"), na = "")
 
