@@ -1,5 +1,5 @@
 library(tidyverse)
-library(rjson)
+# library(rjson)
 library(jsonlite)
 library(RCurl)
 library(lubridate)
@@ -7,203 +7,8 @@ library(tidyjson)
 library(XML)
 library(xml2)
 library(log4r)
-library(mokeR)
+# library(mokeR)
 library(janitor)
-
-
-# Logging functions -------------------------------------------------------
-
-log_layout = function(level, ...){
-  function(level,
-           ..., bill_type, bill_num){
-    msg = paste0(..., collapse = "")
-    
-    sprintf("%s | Bill #%s | %s | %s\n", bill_type, bill_num,
-            log4r:::fmt_current_time("%Y-%m-%d %H:%M:%S"),
-            msg)
-  }
-}
-
-create_logger = function(log_threshold = "INFO", 
-                         directory = here::here("logs"), 
-                         log_types = c("file", "console")){
-  
-  log_appenders = list()
-  if("file" %in% log_types){
-    log_file = here::here(here::here("logs"), 
-                          paste0("log-", 
-                                 format(lubridate::now(), 
-                                        "%Y-%m-%d--%H-%M-%S"), 
-                                 ".txt"))
-    
-    file.create(log_file)
-    
-    log_appenders = append(
-      log_appenders, 
-      log4r::file_appender(log_file, append = T, layout = log_layout()))
-  }
-  
-  if("console" %in% log_types){
-    
-    log_appenders = append(log_appenders, 
-                           log4r::console_appender(layout = log_layout()))
-  }
-  
-  log4r::logger(
-    threshold = log_threshold,
-    appenders = log_appenders
-  )
-}
-
-log_info = function(logger, ...){
-  if(logger$threshold > log4r:::INFO)
-    return(invisible(NULL))
-  for (appender in logger$appenders){
-    appender(level="INFO", ...)
-  }
-}
-
-log_debug = function(logger, ...){
-  if(logger$threshold > log4r:::DEBUG)
-    return(invisible(NULL))
-  for (appender in logger$appenders){
-    appender(level="DEBUG", ...)
-  }
-}
-
-read_log = function(log_file){
-  if(missing(log_file)){
-    logs = file.info(list.files(here("logs"), full.names = T))
-    log_file = row.names(logs[which.max(logs$ctime), ])
-  }
-  read_delim(log_file, delim = " | ", 
-             col_names = c("bill_type", "bill_num", "time", "action"), 
-             col_types = "ccTc") %>% 
-    group_by(bill_type, bill_num) %>% 
-    mutate(parse_time_s = time_length(max(time) - min(time), unit = "second")) %>% 
-    ungroup() %>% 
-    arrange(bill_type, bill_num, time)
-}
-
-
-# API functions -----------------------------------------------------------
-
-
-getPackages = function(packageId, summary = F, xml = T){
-  summary_url = paste0("https://api.govinfo.gov/packages/", packageId, 
-                       "/summary",
-                       "?api_key=", apiGovKey)
-  # encode the URL with characters for each space.
-  summary_json = fromJSON(URLencode(summary_url)) %>% 
-    flatten_dfc()
-  
-  if(summary){
-    return(summary_json)
-  }
-  
-  if(xml){
-    summary_json$xmlLink
-  }
-  
-  
-}
-
-
-get_package_xml = function(packageId){
-  
-  summary_url = paste0("https://api.govinfo.gov/packages/", packageId, 
-                       "/summary",
-                       "?api_key=", apiGovKey)
-  
-  # encode the URL with characters for each space.
-  fromJSON(URLencode(summary_url)) %>% 
-    pluck("download", "xmlLink")
-  
-}
-
-get_published = function(dateIssuedStartDate, dateIssuedEndDate,
-                        startingRecord = 0, numRecords = 20,
-                        collections, congress,
-                        docClass){
-  # If end date is provided, format it
-  if(missing(dateIssuedEndDate)){
-    end_date = ""
-  } else {
-    end_date = paste0("/", format_date_api(dateIssuedEndDate))
-  }
-  
-  
-  # Construct URL to request
-  url = paste0(
-    # Root
-    "https://api.govinfo.gov/published/",
-    # Start and end dates
-    # format_date_api(dateIssuedStartDate), 
-    dateIssuedStartDate,
-    end_date,
-    # Record indexing
-    "?offset=", startingRecord, "&pageSize=", numRecords, 
-    # Collection
-    "&collection=",collections,
-    ifelse(missing(congress), "", paste0("&congress=", congress)),
-    ifelse(missing(docClass), "", paste0("&docClass=", docClass)),
-    # API key
-    "&api_key=", apiGovKey
-  )
-  
-  
-  # Request URL encoded for any spaces
-  request = fromJSON(URLencode(url))
-  # Assign the packages dataframe
-  packages = request$packages
-  
-  
-  
-  # Request the next page of results while a next page exists
-  # while(!is_null(request$nextPage)){
-  while(nrow(packages)<= request$count){
-    summary_links = URLencode(paste0(packages$packageLink, "&api_key=", apiGovKey))
-    map(summary_links, fromJSON)
-    browser()
-    next_page_url = paste0(request$nextPage, "&api_key=", apiGovKey)
-    next_page = URLencode(next_page_url)
-    request = fromJSON(next_page)
-    # request = tryCatch(fromJSON(next_page), 
-    #                    error = function(e)Sys.sleep(30),
-    #                    finally = fromJSON(next_page))
-    # browser()
-    # Requests tend to fail as we approach 10k results
-    # if(nrow(packages)> 9500){
-    #   browser()
-    # }
-    # Append new results to packages
-    packages = bind_rows(packages, request$packages)
-    
-    # A tiny bit of sleep seems to reduce API errors
-    Sys.sleep(.5)
-  }
-  
-  return(packages)
-}
-
-
-# Helper functions --------------------------------------------------------
-
-
-list_flatten_rename = function(list_to_flatten, 
-                              name_prefix = "prefix"){
-  rename_with(
-    .data = as_tibble(list_flatten(list_to_flatten)), 
-    .fn = ~str_c(name_prefix, "_", .),
-    # Exclude columns which already start with the prefix
-    .cols = -starts_with(name_prefix)
-  )
-}
-
-format_date_api = function(date){
-  stopifnot(is.Date(date) || is.timepoint(date))
-  format(date, "%Y-%m-%dT%H:%M:%SZ")
-}
 
 
 # XML parsing functions ---------------------------------------------------
@@ -402,7 +207,7 @@ parse_vote_roll = function(vote, chamber){
       mutate(legislator_votes = list(vote_members)) |> 
       janitor::clean_names()
   }
-
+  
   
   
   
@@ -427,7 +232,7 @@ parse_vote_roll = function(vote, chamber){
 #'
 #' @examples
 parse_action = function(action){
-
+  
   # Separate votes and parse the vote roll
   votes = keep_at(action, "recordedVotes")
   committees = keep_at(action, "committees")
@@ -471,11 +276,11 @@ parse_action = function(action){
 
 parse_amendment = function(amendment){
   map_at(amendment, "actions", function(actions){
-      actions %>% 
-        modify_at("actions", map_dfr, parse_action) %>% 
-        modify_at("actionTypeCounts", flatten_dfc) %>% 
-        modify_at("actionByCounts", flatten_dfc)
-    }) %>% flatten_dfc()
+    actions %>% 
+      modify_at("actions", map_dfr, parse_action) %>% 
+      modify_at("actionTypeCounts", flatten_dfc) %>% 
+      modify_at("actionByCounts", flatten_dfc)
+  }) %>% flatten_dfc()
 }
 
 parse_sponsor = function(sponsor){
@@ -506,20 +311,7 @@ xml_singular_nodes = function(xml_node){
   keep(zero_length_child_nodes, ~(xml_text(.) != ""))
 }
 
-# attribute_tibble_templates = list(
-#   actions = tibble(
-#     actionDate = col_date(), 
-#     actionTime = col_time(),
-#     action_committee_systemCode = col_character(), 
-#     action_committee_name = col_character(), 
-#     action_source_code = col_character(),
-#     action_source_name = col_character(),
-#     action_text = col_character(), 
-#     action_type = col_character(), 
-#     actionCode = col_character()
-#   )
-# )
-
+# List of attribute column types for use with type_convert()
 attribute_col_types = list(
   actions = cols(actionDate = col_date(), 
                  actionTime = col_time(),
@@ -545,9 +337,20 @@ attribute_col_types = list(
 
 
 
+#' Extract bill status from XML
+#'
+#' @param xml_file path to XML file
+#' @param nested_attributes nested attributes to parse
+#' @param col_specs column specifications to use
+#' @param log_threshold threshold for logging
+#' @param log_types type of logger (console, file, NULL)
+#'
+#' @return
+#' @export
+#'
+#' @examples
 extract_bill_status = function(xml_file, 
                                nested_attributes = c("committees", "votes", "actions", "sponsors", "cosponsors"),
-                               get_votes = T,
                                col_specs = attribute_col_types,
                                log_threshold = "INFO",
                                log_types = c("console")){
@@ -575,7 +378,7 @@ extract_bill_status = function(xml_file,
       map(singletons, xml_text), 
       xml_name(singletons))
   )
-
+  
   # Extract other bill-level attributes ----
   ## Policy area
   policy_areas = map_chr(as_list(xml_find_all(bill_xml, "policyArea/name")),
@@ -609,13 +412,6 @@ extract_bill_status = function(xml_file,
     as_tibble() |> 
     rename_with(~str_c("latestAction_", .))
   
-  # bill_df = bill_df |> 
-  #   mutate(policy_areas = list(policy_areas),
-  #          legislative_subjects = list(bill_subjects),
-  #          bill_summaries = list(bill_summaries),
-  #          bill_titles = list(bill_titles),
-  #          bill_text_versions = list(bill_text_versions)) |> 
-  #   bind_cols(latest_action)
   # Combine bill-level attributes
   bill_df$policy_areas = list(policy_areas)
   bill_df$legislative_subjects = list(bill_subjects)
@@ -627,23 +423,23 @@ extract_bill_status = function(xml_file,
   bill_df = bind_cols(bill_df, latest_action) |> 
     # While files are not fully reprocessed, remove bill prefix
     rename_with(~str_remove(., "^bill"))
-
+  
   log_debug(logger, 
-           bill_type = bill_df$type,
-           bill_num = bill_df$number,
-           "Reading XML")
-
-
+            bill_type = bill_df$type,
+            bill_num = bill_df$number,
+            "Reading XML")
+  
+  
   # Committees ---------
   log_debug(logger, 
-           bill_type = bill_df$type,
-           bill_num = bill_df$number,
-           "Parsing committees")
+            bill_type = bill_df$type,
+            bill_num = bill_df$number,
+            "Parsing committees")
   
   committees = xml_find_all(bill_xml, "//bill/committees/item")
   
   if("committees" %in% nested_attributes && length(committees)>0){
-
+    
     # Coerce nodes to list
     committees_list = as_list(committees)
     
@@ -655,53 +451,16 @@ extract_bill_status = function(xml_file,
     bill_df$committees = list(tibble())
   }
   
-  # Votes ---------
-  # log_debug(logger, 
-  #          bill_type = bill_df$type,
-  #          bill_num = bill_df$number,
-  #          "Parsing votes")
-  # 
-  # votes_node = xml_find_all(bill_xml, "//bill/recordedVotes/recordedVote")
-  # 
-  # if("votes" %in% nested_attributes && length(votes_node)>0 && get_votes){
-  #   
-  #   
-  #   # Coerce nodes to list
-  #   votes_list = as_list(votes_node)
-  # 
-  #   votes_df = select(map_dfr(votes_list, flatten_dfc), -any_of(c("congress")))
-  # 
-  #   # Add Vote tallies
-  #   vote_rolls_df = mutate(votes_df,
-  #                          vote_roll = map2(url, chamber, parse_vote_roll, 
-  #                            logger = logger, 
-  #                            bill_type = bill_df$type,
-  #                            bill_num = bill_df$number),
-  #            roll_found = map_lgl(vote_roll, ~(nrow(.) > 0))) |> 
-  #     janitor::clean_names()
-  #   
-  #   bill_df$house_votes = list(filter(vote_rolls_df, chamber == "House"))
-  #   bill_df$senate_votes = list(filter(vote_rolls_df, chamber == "Senate"))
-  # } else {
-  #   bill_df$house_votes = list(tibble())
-  #   bill_df$senate_votes = list(tibble())
-  # }
   
   # Actions ---------
   log_debug(logger, 
-           bill_type = bill_df$type,
-           bill_num = bill_df$number,
-           "Parsing actions")
+            bill_type = bill_df$type,
+            bill_num = bill_df$number,
+            "Parsing actions")
   
   bill_actions = xml_find_all(bill_xml, "//bill/actions/item")
   
   if("actions" %in% nested_attributes && length(bill_actions)>0){
-
-    # Action counts not found in Senate bill 3271
-    # bill_action_counts = as_list(xml_find_all(bill_xml, "//bill/actions/*[not(self::item)]")) |> 
-    #   map_dfc(flatten_dfc) |> 
-    #   rename_with(.cols = everything(), ~str_c("actions_", .)) |> 
-    #   pivot_longer(everything(), names_to = "action", names_prefix = "actions_", values_to = "count")
     
     # Coerce nodes to list
     actions_df = as_list(bill_actions) |> 
@@ -712,40 +471,21 @@ extract_bill_status = function(xml_file,
     
     bill_df$actions = list(actions_df)
     
-    # bill_df$action_counts = list(type_convert(bill_action_counts,
-    #                                           col_types = cols(action = col_character(), count = col_integer())))
   } else {
     bill_df$actions = list(tibble())
   }
   
-  # Amendments ---------
-  # log_debug(logger, 
-  #          bill_type = bill_df$type,
-  #          bill_num = bill_df$number,
-  #          "Parsing amendments")
-  # amendments_node = bill_nodesets[["amendments"]]
-  # if(xml_length(amendments_node)>0){
-  #   browser()
-  #   bill_amendments = xml_find_all(amendments_node, "amendment")
-  #   # Coerce nodes to list
-  #   amendments_df = map(bill_amendments, as_list) |> 
-  #     map_dfr(parse_action)
-  #   
-  #   bill_df$amendments = list(amendments_df)
-  # } else {
-  #   bill_df$amendments = list(tibble())
-  # }
   
   # Sponsors ---------
   log_debug(logger, 
-           bill_type = bill_df$type,
-           bill_num = bill_df$number,
-           "Parsing sponsors")
+            bill_type = bill_df$type,
+            bill_num = bill_df$number,
+            "Parsing sponsors")
   
   bill_sponsors = xml_find_all(bill_xml, "//bill/sponsors/item")
   
   if("sponsors" %in% nested_attributes && length(bill_sponsors)>0){
-
+    
     # Coerce nodes to list
     sponsors_df = as_list(bill_sponsors) |> 
       map(parse_sponsor) |> 
@@ -760,9 +500,9 @@ extract_bill_status = function(xml_file,
   
   # Cosponsors ---------
   log_debug(logger, 
-           bill_type = bill_df$type,
-           bill_num = bill_df$number,
-           "Parsing cosponsors")
+            bill_type = bill_df$type,
+            bill_num = bill_df$number,
+            "Parsing cosponsors")
   
   bill_cosponsors = xml_find_all(bill_xml, "//bill/cosponsors/item")
   
@@ -784,13 +524,13 @@ extract_bill_status = function(xml_file,
     unite(bill_id, type, number, sep = "-", remove = F)
   
   log_info(logger, 
-            bill_type = bill_df$type,
-            bill_num = bill_df$number,
-            "Complete")
+           bill_type = bill_df$type,
+           bill_num = bill_df$number,
+           "Complete")
   
   mutate(finished_df,
          across(ends_with("date"), as_datetime)
-         )
+  )
 }
 
 trunc_columns = function(df){
@@ -892,3 +632,188 @@ code_actions = function(actions_df,
     ungroup() %>% 
     select(-action_type_fct, -action_time)
 }
+
+# Logging functions -------------------------------------------------------
+
+log_layout = function(level, ...){
+  function(level,
+           ..., bill_type, bill_num){
+    msg = paste0(..., collapse = "")
+    
+    sprintf("%s | Bill #%s | %s | %s\n", bill_type, bill_num,
+            log4r:::fmt_current_time("%Y-%m-%d %H:%M:%S"),
+            msg)
+  }
+}
+
+create_logger = function(log_threshold = "INFO", 
+                         directory = here::here("logs"), 
+                         log_types = c("file", "console")){
+  
+  log_appenders = list()
+  if("file" %in% log_types){
+    log_file = here::here(here::here("logs"), 
+                          paste0("log-", 
+                                 format(lubridate::now(), 
+                                        "%Y-%m-%d--%H-%M-%S"), 
+                                 ".txt"))
+    
+    file.create(log_file)
+    
+    log_appenders = append(
+      log_appenders, 
+      log4r::file_appender(log_file, append = T, layout = log_layout()))
+  }
+  
+  if("console" %in% log_types){
+    
+    log_appenders = append(log_appenders, 
+                           log4r::console_appender(layout = log_layout()))
+  }
+  
+  log4r::logger(
+    threshold = log_threshold,
+    appenders = log_appenders
+  )
+}
+
+log_info = function(logger, ...){
+  if(logger$threshold > log4r:::INFO)
+    return(invisible(NULL))
+  for (appender in logger$appenders){
+    appender(level="INFO", ...)
+  }
+}
+
+log_debug = function(logger, ...){
+  if(logger$threshold > log4r:::DEBUG)
+    return(invisible(NULL))
+  for (appender in logger$appenders){
+    appender(level="DEBUG", ...)
+  }
+}
+
+read_log = function(log_file){
+  if(missing(log_file)){
+    logs = file.info(list.files(here("logs"), full.names = T))
+    log_file = row.names(logs[which.max(logs$ctime), ])
+  }
+  read_delim(log_file, delim = " | ", 
+             col_names = c("bill_type", "bill_num", "time", "action"), 
+             col_types = "ccTc") %>% 
+    group_by(bill_type, bill_num) %>% 
+    mutate(parse_time_s = time_length(max(time) - min(time), unit = "second")) %>% 
+    ungroup() %>% 
+    arrange(bill_type, bill_num, time)
+}
+
+
+# API functions -----------------------------------------------------------
+
+
+getPackages = function(packageId, summary = F, xml = T){
+  summary_url = paste0("https://api.govinfo.gov/packages/", packageId, 
+                       "/summary",
+                       "?api_key=", apiGovKey)
+  # encode the URL with characters for each space.
+  summary_json = fromJSON(URLencode(summary_url)) %>% 
+    flatten_dfc()
+  
+  if(summary){
+    return(summary_json)
+  }
+  
+  if(xml){
+    summary_json$xmlLink
+  }
+  
+  
+}
+
+
+get_package_xml = function(packageId){
+  
+  summary_url = paste0("https://api.govinfo.gov/packages/", packageId, 
+                       "/summary",
+                       "?api_key=", apiGovKey)
+  
+  # encode the URL with characters for each space.
+  fromJSON(URLencode(summary_url)) %>% 
+    pluck("download", "xmlLink")
+  
+}
+
+get_published = function(dateIssuedStartDate, dateIssuedEndDate,
+                         startingRecord = 0, numRecords = 20,
+                         collections, congress,
+                         docClass){
+  # If end date is provided, format it
+  if(missing(dateIssuedEndDate)){
+    end_date = ""
+  } else {
+    end_date = paste0("/", format_date_api(dateIssuedEndDate))
+  }
+  
+  
+  # Construct URL to request
+  url = paste0(
+    # Root
+    "https://api.govinfo.gov/published/",
+    # Start and end dates
+    # format_date_api(dateIssuedStartDate), 
+    dateIssuedStartDate,
+    end_date,
+    # Record indexing
+    "?offset=", startingRecord, "&pageSize=", numRecords, 
+    # Collection
+    "&collection=",collections,
+    ifelse(missing(congress), "", paste0("&congress=", congress)),
+    ifelse(missing(docClass), "", paste0("&docClass=", docClass)),
+    # API key
+    "&api_key=", apiGovKey
+  )
+  
+  
+  # Request URL encoded for any spaces
+  request = fromJSON(URLencode(url))
+  # Assign the packages dataframe
+  packages = request$packages
+  
+  
+  
+  # Request the next page of results while a next page exists
+  # while(!is_null(request$nextPage)){
+  while(nrow(packages)<= request$count){
+    summary_links = URLencode(paste0(packages$packageLink, "&api_key=", apiGovKey))
+    map(summary_links, fromJSON)
+    browser()
+    next_page_url = paste0(request$nextPage, "&api_key=", apiGovKey)
+    next_page = URLencode(next_page_url)
+    request = fromJSON(next_page)
+    # request = tryCatch(fromJSON(next_page), 
+    #                    error = function(e)Sys.sleep(30),
+    #                    finally = fromJSON(next_page))
+    # browser()
+    # Requests tend to fail as we approach 10k results
+    # if(nrow(packages)> 9500){
+    #   browser()
+    # }
+    # Append new results to packages
+    packages = bind_rows(packages, request$packages)
+    
+    # A tiny bit of sleep seems to reduce API errors
+    Sys.sleep(.5)
+  }
+  
+  return(packages)
+}
+
+# Helper functions --------------------------------------------------------
+
+
+format_date_api = function(date){
+  stopifnot(is.Date(date) || is.timepoint(date))
+  format(date, "%Y-%m-%dT%H:%M:%SZ")
+}
+
+

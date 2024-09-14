@@ -1,8 +1,10 @@
+# library(extrafont)
 library(tictoc)
 library(furrr)
 library(here)
-plan(multisession)
-source(here("R", "parsing_functions.R"))
+# library(reactable)
+plan(multisession, workers = 6)
+source("R/parsing_functions.R")
 
 # List files ----
 # Files collected from:
@@ -11,10 +13,10 @@ source(here("R", "parsing_functions.R"))
 # https://github.com/unitedstates/congress-legislators/commit/5e4d9a0656458646e96c2b378fba640c0e22f8b1?diff=split
 # Also here:
 # https://clerk.house.gov/xml/lists/MemberData.xml
-bill_types = list.files(here("data", "BILLSTATUS","117"))
+bill_types = list.files(here("data", "BILLSTATUS","118"), pattern = "^[a-z]+$")
 
-bill_folders = here("data", "BILLSTATUS", "117", bill_types) |> 
-    str_remove_all("\\/OneDrive")
+bill_folders = here("data", "BILLSTATUS", "118", bill_types) |> 
+  str_remove_all("\\/OneDrive")
 
 bill_files = map(bill_folders, list.files, full.names = T) |> 
   set_names(bill_types)
@@ -52,17 +54,16 @@ all_files = flatten_chr(bill_files)
 sample_files = sample(all_files, 500)
 
 tic()
-sample_df = future_map(sample_files, extract_bill_status, 
-                       log_types = "console", .progress=T) |> 
+sample_df = map(bill_files$hr, extract_bill_status, 
+                log_types = "console", .progress=T) |> 
   list_rbind()
 toc()
 
-# Extract for real
+
 tic(str_c("Extract ", length(all_files), " bills"))
 all_bills = future_map(all_files, extract_bill_status, 
                        log_types = NULL, .progress = T) |> 
   list_rbind() |> 
-  # Set column order
   select(congress, origin_chamber, bill_id, type, number, title, 
          introduced_date, update_date, 
          latest_action_date = latest_action_action_date, latest_action_text, latest_action_action_time = latest_action_action_time,
@@ -93,9 +94,9 @@ test_xml_committees = xml_find_all(test_xml, "./committees/item")
 test_xml_committees %>% map(xml_children)
 
 
-
 # Save objects ------------------------------------------------------------
 
 saveRDS(all_bills, here("data", "cleaned", paste0("BILLSTATUS_117_", lubridate::today(), ".Rds")))
 # saveRDS(actions_unnested, here("data", "cleaned", "BILLSTATUS_117_Actions.Rds"))
+
 
